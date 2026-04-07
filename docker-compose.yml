@@ -1,0 +1,97 @@
+version: "3.9"
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow
+    ports:
+      - "5001:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      - WEB_CONCURRENCY=1
+    command: >
+      bash -c "pip install mlflow==2.12.1 --quiet &&
+               mlflow server
+               --host 0.0.0.0
+               --port 5000
+               --backend-store-uri sqlite:////mlflow/mlflow.db
+               --default-artifact-root /mlflow/artifacts"
+    restart: unless-stopped
+
+  workload_simulator:
+    build:
+      context: ./workload_simulator
+      dockerfile: Dockerfile
+    container_name: workload_simulator
+    ports:
+      - "8000:8000"
+    environment:
+      - JOB_ID=${JOB_ID:-job-001}
+      - SCENARIO=${SCENARIO:-NORMAL}
+      - TOTAL_EPOCHS=${TOTAL_EPOCHS:-50}
+      - EPOCH_DURATION_SECONDS=${EPOCH_DURATION_SECONDS:-8}
+      - FAULT_INJECT_AFTER_EPOCH=${FAULT_INJECT_AFTER_EPOCH:-10}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - INSTANCE_TYPE=${INSTANCE_TYPE:-g4dn.xlarge}
+    depends_on:
+      - mlflow
+    restart: unless-stopped
+
+  optimization_engine:
+    build:
+      context: ./optimization_engine
+      dockerfile: Dockerfile
+    container_name: optimization_engine
+    ports:
+      - "8001:8001"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - SIMULATOR_URL=http://workload_simulator:8000
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-30}
+      - IDLE_GPU_THRESHOLD_PERCENT=${IDLE_GPU_THRESHOLD_PERCENT:-10}
+      - IDLE_GPU_DURATION_SECONDS=${IDLE_GPU_DURATION_SECONDS:-900}
+      - STALL_THRESHOLD_SECONDS=${STALL_THRESHOLD_SECONDS:-600}
+      - INSTANCE_TYPE=${INSTANCE_TYPE:-g4dn.xlarge}
+      - ALERT_COOLDOWN_SECONDS=${ALERT_COOLDOWN_SECONDS:-300}
+    depends_on:
+      - prometheus
+      - workload_simulator
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  mlflow_data:
