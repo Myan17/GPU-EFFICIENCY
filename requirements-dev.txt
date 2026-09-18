@@ -1,0 +1,9 @@
+# Test-only dependencies. Service runtime deps live in
+# optimization_engine/requirements.txt and workload_simulator/requirements.txt.
+pytest>=8.2
+pytest-cov>=5.0
+
+# imported by optimization_engine at module load
+requests>=2.31
+fastapi>=0.111
+prometheus_client>=0.20

@@ -1,5 +1,11 @@
 # Convergence-Aware GPU Efficiency — Phase 1 (Local Simulation)
 
+[![CI](https://github.com/Myan17/GPU-EFFICIENCY/actions/workflows/ci.yml/badge.svg)](https://github.com/Myan17/GPU-EFFICIENCY/actions/workflows/ci.yml)
+
+Detects idle GPUs, stalled training, and OOM crashes, then pauses the job before
+it burns another hour of instance time. **54 tests · 69% coverage · measured
+57–60% spend avoided on faulted jobs, 0 false positives on healthy ones.**
+
 ## Architecture
 
 ```
@@ -131,6 +137,64 @@ make resume          # resume if paused
 | `STALL_THRESHOLD_SECONDS`   | `600`          | Seconds with no val_acc progress before action |
 | `ALERT_COOLDOWN_SECONDS`    | `300`          | Min seconds between repeated alerts            |
 | `SLACK_WEBHOOK_URL`         | (empty)        | Slack incoming webhook (empty = console only)  |
+
+## Measured results
+
+Run it yourself — no cloud account, no Docker:
+
+```bash
+pip install -r requirements-dev.txt
+python benchmarks/savings_benchmark.py
+```
+
+The benchmark replays the simulator's own fault models through the engine's own
+rule thresholds and prices both outcomes with the cost model. A 50-epoch job at
+8 min/epoch is 6.7 h unmanaged; the fault lands at epoch 20 (160 min).
+
+| Scenario | Detected at | Unmanaged | Managed | Saved | |
+|---|---|---|---|---|---|
+| NORMAL | never | $3.51 | $3.51 | $0.00 | **0%** |
+| IDLE_GPU | 170.5 min | $3.51 | $1.49 | $2.01 | **57.4%** |
+| STALL | 170.5 min | $3.51 | $1.49 | $2.01 | **57.4%** |
+| OOM_CRASH | 160.0 min | $3.51 | $1.40 | $2.10 | **60.0%** |
+
+*(g4dn.xlarge at $0.526/hr. The saved **percentage** is identical on p3.2xlarge
+and p3.8xlarge — only the dollar figure scales, to $11.70 and $46.82.)*
+
+Across the nine faulted runs in the matrix: **$184.37 saved, 35.0 GPU-hours
+avoided.** Across the three healthy runs: **$0.00 — the engine paused nothing.**
+No false positives is the result that matters most; a false pause would kill
+real training.
+
+Two honest notes on the numbers:
+
+1. **IDLE_GPU is caught by the stall rule, not the idle rule.** When the GPU
+   goes idle, accuracy stops moving as well, so R2's 10-minute window expires
+   before R1's 15-minute window does. Both detect it; R2 gets there first.
+2. **This measures detection latency priced at real AWS on-demand rates, on
+   simulated jobs.** It is not a measurement of a real training run, and the
+   README does not claim it is. Phase 2 (below) is where that would come from.
+
+The figures above are pinned by `tests/test_savings_benchmark.py`, so changing a
+threshold or a price fails CI until this table is updated.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests -q
+```
+
+54 tests, gated at 65% coverage in CI:
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `test_engine_rules.py` | 23 | R1/R2/R3 trigger, non-trigger, cooldown, cooldown expiry, terminal-status guards, unreachable-Prometheus guard |
+| `test_cost_model.py` | 13 | pricing table, per-second accrual, cost-per-convergence-step, stall behaviour, divide-by-zero guard, upgrade/downgrade map integrity |
+| `test_slack_notifier.py` | 9 | payload contents, no-webhook no-op, Slack-outage tolerance |
+| `test_savings_benchmark.py` | 9 | detection latencies, published savings, determinism, no false positives |
+
+Nothing in the suite makes a network call or needs a running container.
 
 ## Novel Metric — Cost per Convergence Step
 
