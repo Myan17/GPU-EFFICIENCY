@@ -39,3 +39,8 @@ mlflow.db
 
 # Claude Code session data
 .claude/
+
+# Coverage data
+.coverage
+coverage.xml
+htmlcov/
